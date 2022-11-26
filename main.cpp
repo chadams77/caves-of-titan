@@ -42,9 +42,10 @@ public:
     }
 };
 
-CLInt NUM_PARTICLES = 32768;
+CLInt NUM_PARTICLES = 512 * 512;
 CLInt2 GRID_SIZE(2048, 2048);
 CLFloat GRAVITY = 8.;
+CLFloat3 CAMERA;
 
 ////////////
 
@@ -57,6 +58,7 @@ GLFWwindow * window;
 GLFWmonitor * monitor;
 const GLFWvidmode * mode;
 double deltaTime = 1. / 60.;
+double time = 0.;
 int newParticleIndex = 0;
 bool anyParticlesAdded = false;
 
@@ -106,6 +108,15 @@ void handleWindowResize () {
     }
 }
 
+void clearParticles () {
+    Particle * data = new Particle[NUM_PARTICLES];
+    for (size_t i=0; i<NUM_PARTICLES; i++) {
+        data[i].id = -1;
+    }
+    particleBfr->writeSync(0, NUM_PARTICLES * sizeof(Particle), (void *)data);
+    newParticleIndex = 0;
+}
+
 void addParticle (Particle & P) {
     anyParticlesAdded = true;
     P.id = newParticleIndex;
@@ -116,7 +127,95 @@ void addParticle (Particle & P) {
     }
 }
 
+void addParticles (Particle * data, int count) {
+    for (size_t i=0; i<count; i++) {
+        data[i].id = (newParticleIndex + i) % NUM_PARTICLES;
+    }
+    if ((newParticleIndex + count) < NUM_PARTICLES) {
+        particleBfr->writeSync(newParticleIndex * sizeof(Particle), count * sizeof(Particle), (void *)data);
+    }
+    else {
+        int over = (newParticleIndex + count) - NUM_PARTICLES;
+        particleBfr->writeSync(newParticleIndex * sizeof(Particle), (count - over) * sizeof(Particle), (void *)data);
+        particleBfr->writeSync(0, over * sizeof(Particle), (void *)(data + (count - over)));
+    }
+    newParticleIndex = (newParticleIndex + count) % NUM_PARTICLES;
+}
+
 #define RAND ((float)(rand() % 12347) / 12347.)
+
+void initLevel() {
+    clearParticles();
+
+    int size = 512;
+    int * grid = new int[size * size];
+    int * grid2 = new int[size * size];
+    for (int x=0; x<size; x++) {
+        for (int y=0; y<size; y++) {
+            grid[x + y * size] = (RAND < 0.49 || x <= 5 || y <= 5 || x >= (size - 5) || y >= (size - 5)) ? 1 : 0;
+        }
+    }
+    for (int k=0; k<20; k++) {
+        for (int x=0; x<size; x++) {
+            for (int y=0; y<size; y++) {
+                int off = x + y * size;
+                int ncount = 0;
+                for (int dx=-1; dx<=1; dx++) {
+                    for (int dy=-1; dy<=1; dy++) {
+                        int nx = x + dx, ny = y + dy;
+                        ncount += (nx < 0 || ny < 0 || nx >= size || ny >= size || grid[nx+ny*size] == 1) ? 1 : 0;
+                    }
+                }
+                if (ncount == 5) {
+                    grid2[off] = grid[off];
+                }
+                else if (ncount > 5) {
+                    grid2[off] = 1;
+                }
+                else {
+                    grid2[off] = 0;
+                }
+            }
+        }
+        int * tmp = grid;
+        grid = grid2;
+        grid2 = tmp;
+    }
+    int count = 0;
+    for (int x=0; x<size; x++) {
+        for (int y=0; y<size; y++) {
+            int rock = grid[x + y*size];
+            count += rock > 0 ? 1 : 0;
+        }
+    }
+    Particle * newPrt = new Particle[count];
+    int idx = 0;
+    for (int x=0; x<size; x++) {
+        for (int y=0; y<size; y++) {
+            int rock = grid[x + y*size];
+            if (rock) {
+                Particle P;
+                P.position.x = ((float)x + 0.5f) / (float)size * (float)GRID_SIZE.x;
+                P.position.y = ((float)y + 0.5f) / (float)size * (float)GRID_SIZE.y;
+                P.velocity.x = P.velocity.y = 0.;
+                P.heat = 0.;
+                P.mass = 100.;
+                P.radius = (float)GRID_SIZE.x / (float)size;
+                P.types.x = 1.;
+                P.types.y = 0.;
+                P.types.z = 0.;
+                P.types.w = 0.;
+                newPrt[idx] = P;
+                idx ++;
+            }
+        }
+    }
+    addParticles(newPrt, count);
+    delete newPrt;
+    delete grid;
+    delete grid2;
+    time = 0.;
+}
 
 int main (void)
 {
@@ -152,21 +251,11 @@ int main (void)
 
     deltaTime = 1. / (double)(mode->refreshRate);
 
-    for (int i=0; i<1000; i++) {
-        Particle P;
-        P.position.x = 500. + RAND * 256.;
-        P.position.y = 500. + RAND * 256.;
-        P.radius = 5. + RAND * 5.;
-        P.mass = P.radius * P.radius;
-        P.heat = 5. + RAND * 5.;
-        P.velocity.x = 0.;
-        P.velocity.y = 0.;
-        P.types.x = 1.;
-        P.types.y = 0.;
-        P.types.z = 0.;
-        P.types.w = 0.;
-        addParticle(P);
-    }
+    initLevel();
+
+    CAMERA.x = (float)GRID_SIZE.x * 0.5;
+    CAMERA.y = (float)GRID_SIZE.y * 0.5;
+    CAMERA.z = 1.;
 
     while (!glfwWindowShouldClose(window)) {
 
@@ -184,6 +273,11 @@ int main (void)
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
 
+        float _r = sin(time) * 0.4 + 1.3;
+        float _a = (time * 1.37);
+        CAMERA.x = (float)GRID_SIZE.x * 0.5 + cos(_a) * _r * 512.;
+        CAMERA.y = (float)GRID_SIZE.y * 0.5 + sin(_a) * _r * 512.;
+
         CLInt2 renderSize(WINDOW_WIDTH, WINDOW_HEIGHT);
         
         program->setArg("update_grids", 0, particleBfr);
@@ -198,6 +292,7 @@ int main (void)
         program->setArg("render_main", 1, renderSize);
         program->setArg("render_main", 2, gridBfr);
         program->setArg("render_main", 3, GRID_SIZE);
+        program->setArg("render_main", 4, CAMERA);
 
         program->setArg("update_particles", 0, particleBfr);
         program->setArg("update_particles", 1, gridBfr);
@@ -241,6 +336,8 @@ int main (void)
         lastKeyDown = keyDown;
 
         glfwPollEvents();
+
+        time += deltaTime;
     }
 
     delete gridBfr;
