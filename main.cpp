@@ -30,6 +30,7 @@ bool FULLSCREEN = false;
 
 map<GLuint, bool> keyDown, lastKeyDown;
 
+// Callbacks
 void onWindowResize (GLFWwindow* window, int width, int height)
 {
     WINDOW_WIDTH = (GLuint)width;
@@ -41,6 +42,33 @@ void onKeyboard (GLFWwindow* window, int key, int scancode, int action, int mods
 {
     keyDown[key] = action == GLFW_PRESS;
 }
+////////////
+
+// Mirror classes for transfering data to/from kernels
+class GridCell {
+    CLInt mass;
+    CLInt heat;
+    CLInt2 velocity; // 4
+    CLInt4 types; // 8 // x:rock, y:oil, z:fire/smoke, w:water/steam
+    GridCell() { }
+};
+
+class Particle {
+    CLInt id;
+    CLFloat2 position;
+    CLFloat radius; // 4
+    CLFloat2 velocity;
+    CLFloat mass;
+    CLFloat heat; // 8
+    CLFloat4 types; // 12 // x:rock, y:oil, z:fire/smoke, w:water/steam
+    Particle() {
+        id = -1;
+    }
+};
+
+CLInt NUM_PARTICLES = 32768;
+CLInt2 GRID_SIZE(2048, 2048);
+////////////
 
 int main(void)
 {
@@ -65,8 +93,15 @@ int main(void)
 
     CLContext cl_context;
 
-    CLProgram renderProgram(cl_context, "render_main");
-    CLImageGL *outImage = new CLImageGL(&renderProgram, WINDOW_WIDTH, WINDOW_HEIGHT, MEMORY_WRITE);
+    CLProgram program(cl_context, "main");
+
+    CLImageGL *outImage = new CLImageGL(&program, WINDOW_WIDTH, WINDOW_HEIGHT, MEMORY_WRITE);
+
+    CLBuffer particleBfr(&program, NUM_PARTICLES, sizeof(Particle), MEMORY_READ_WRITE);
+    CLBuffer gridBfr(&program, GRID_SIZE.x * GRID_SIZE.y, sizeof(GridCell), MEMORY_READ_WRITE);
+
+    particleBfr.writeSync();
+    gridBfr.writeSync();
 
     GLFWmonitor * monitor = glfwGetPrimaryMonitor();
     const GLFWvidmode * mode = glfwGetVideoMode(monitor);
@@ -94,7 +129,7 @@ int main(void)
 
         if (WINDOW_RESIZED) {
             delete outImage;
-            outImage = new CLImageGL(&renderProgram, WINDOW_WIDTH, WINDOW_HEIGHT, MEMORY_WRITE);
+            outImage = new CLImageGL(&program, WINDOW_WIDTH, WINDOW_HEIGHT, MEMORY_WRITE);
             glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
             WINDOW_RESIZED = false;
         }
@@ -108,17 +143,35 @@ int main(void)
         glLoadIdentity();
 
         CLInt2 renderSize(WINDOW_WIDTH, WINDOW_HEIGHT);
+        
+        program.setArg("update_grids", 0, &particleBfr);
+        program.setArg("update_grids", 1, &gridBfr);
+        program.setArg("update_grids", 2, NUM_PARTICLES);
+        program.setArg("update_grids", 3, GRID_SIZE);
 
-        renderProgram.setArg("render_main", 0, outImage);
-        renderProgram.setArg("render_main", 1, renderSize);
+        program.setArg("clear_grids", 0, &gridBfr);
+        program.setArg("clear_grids", 1, GRID_SIZE);
 
-        renderProgram.acquireImageGL(outImage);
+        program.setArg("render_main", 0, outImage);
+        program.setArg("render_main", 1, renderSize);
+        program.setArg("render_main", 2, &gridBfr);
+        program.setArg("render_main", 3, GRID_SIZE);
 
-        if (!renderProgram.callFunction("render_main", WINDOW_WIDTH * WINDOW_HEIGHT)) {
+        program.acquireImageGL(outImage);
+
+        if (!program.callFunction("clear_grids", GRID_SIZE.x * GRID_SIZE.y)) {
             exit(0);
         }
 
-        renderProgram.releaseImageGL(outImage);
+        if (!program.callFunction("update_grids", NUM_PARTICLES)) {
+            exit(0);
+        }
+
+        if (!program.callFunction("render_main", WINDOW_WIDTH * WINDOW_HEIGHT)) {
+            exit(0);
+        }
+
+        program.releaseImageGL(outImage);
 
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, outImage->glTex);

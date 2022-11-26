@@ -8,7 +8,7 @@ SETUP (Windows)
  * Create folder called lib
  * Download & Put .lib files for GLFW3 (32bit) in lib/ folder: glfw3.lib, glfw3_mt.lib, glfw3dll.lib
  * Download & Put .lib file for OpenCL 1.1 in lib/ folder: opencl.lib
- * Creat folder called release
+ * Create folder called release
  * Put: glfw3.dll in release/ folder
  
 BUILD
@@ -20,5 +20,6 @@ BUILD
 RUN
 ---
 
- * CD release
- * Run: CavesOfTitan.exe
+ * Run: init.bat
+ * Run: run.bat
+ * Or if already built, simply double click CavesOfTitan.exe in the release/ folder
