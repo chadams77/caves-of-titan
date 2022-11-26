@@ -1,5 +1,5 @@
 # Caves Of Titan
-High volume voxel ray tracer written in C++ and OpenCL C
+For the "Bad Mama Jama" Game Jam in Nov 2022
 
 SETUP (Windows)
 ---------------
