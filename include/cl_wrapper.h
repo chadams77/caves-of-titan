@@ -435,7 +435,7 @@ public:
         size_t mwSize = kernel->getWorkGroupInfo<CL_KERNEL_WORK_GROUP_SIZE>(context->devices[context->preferredDevice]);
         size_t mul = kernel->getWorkGroupInfo<CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE>(context->devices[context->preferredDevice]);
         size_t localSize = ((size_t)floor((float)mwSize / (float)mul)) * mul;
-        size_t globalSize = n;//((n+localSize-1) / localSize) * localSize;
+        size_t globalSize = ((n+localSize-1) / localSize) * localSize;
         cl::Event event;
         int err = queue.enqueueNDRangeKernel(*kernel, cl::NullRange, cl::NDRange(globalSize), cl::NDRange(localSize), NULL, &event);
         context->ReportError(err, "callFunction: ");
