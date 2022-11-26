@@ -18,26 +18,6 @@ using std::map;
 using std::vector;
 using std::string;
 
-GLuint WINDOW_WIDTH = 1024;
-GLuint WINDOW_HEIGHT = 1024;
-GLuint DATA_SIZE = WINDOW_WIDTH * WINDOW_HEIGHT * 4;
-bool WINDOW_RESIZED = false;
-bool FULLSCREEN = false;
-
-map<GLuint, bool> keyDown, lastKeyDown;
-
-// Callbacks
-void onWindowResize (GLFWwindow* window, int width, int height) {
-    WINDOW_WIDTH = (GLuint)width;
-    WINDOW_HEIGHT = (GLuint)height;
-    WINDOW_RESIZED = true;
-}
-
-void onKeyboard (GLFWwindow* window, int key, int scancode, int action, int mods) {
-    keyDown[key] = action == GLFW_PRESS;
-}
-////////////
-
 // Mirror classes for transfering data to/from kernels
 class GridCell {
 public:
@@ -64,6 +44,8 @@ public:
 
 CLInt NUM_PARTICLES = 32768;
 CLInt2 GRID_SIZE(2048, 2048);
+CLFloat GRAVITY = 8.;
+
 ////////////
 
 CLContext * clContext;
@@ -78,7 +60,25 @@ double deltaTime = 1. / 60.;
 int newParticleIndex = 0;
 bool anyParticlesAdded = false;
 
+GLuint WINDOW_WIDTH = 1024;
+GLuint WINDOW_HEIGHT = 1024;
+GLuint DATA_SIZE = WINDOW_WIDTH * WINDOW_HEIGHT * 4;
+bool WINDOW_RESIZED = false;
+bool FULLSCREEN = false;
+
+map<GLuint, bool> keyDown, lastKeyDown;
+
 //////////
+
+void onWindowResize (GLFWwindow* window, int width, int height) {
+    WINDOW_WIDTH = (GLuint)width;
+    WINDOW_HEIGHT = (GLuint)height;
+    WINDOW_RESIZED = true;
+}
+
+void onKeyboard (GLFWwindow* window, int key, int scancode, int action, int mods) {
+    keyDown[key] = action == GLFW_PRESS;
+}
 
 void setFullscreen (bool flag) {
     if (flag) {
@@ -154,8 +154,8 @@ int main (void)
 
     for (int i=0; i<1000; i++) {
         Particle P;
-        P.position.x = RAND * 1000.;
-        P.position.y = RAND * 1000.;
+        P.position.x = 500. + RAND * 256.;
+        P.position.y = 500. + RAND * 256.;
         P.radius = 5. + RAND * 5.;
         P.mass = P.radius * P.radius;
         P.heat = 5. + RAND * 5.;
@@ -199,6 +199,13 @@ int main (void)
         program->setArg("render_main", 2, gridBfr);
         program->setArg("render_main", 3, GRID_SIZE);
 
+        program->setArg("update_particles", 0, particleBfr);
+        program->setArg("update_particles", 1, gridBfr);
+        program->setArg("update_particles", 2, NUM_PARTICLES);
+        program->setArg("update_particles", 3, GRID_SIZE);
+        program->setArg("update_particles", 4, (CLFloat)deltaTime);
+        program->setArg("update_particles", 5, GRAVITY);
+
         program->acquireImageGL(outImage);
 
         if (!program->callFunction("clear_grids", GRID_SIZE.x * GRID_SIZE.y)) {
@@ -206,6 +213,10 @@ int main (void)
         }
 
         if (!program->callFunction("update_grids", NUM_PARTICLES)) {
+            exit(0);
+        }
+
+        if (!program->callFunction("update_particles", NUM_PARTICLES)) {
             exit(0);
         }
 

@@ -20,8 +20,7 @@ typedef struct __attribute__((packed)) _GridCell {
 } GridCell;
 
 __kernel void clear_grids( __global GridCell * grid,
-                           int2 grid_size )
-{
+                           int2 grid_size ) {
     int id = get_global_id(0);
     int n = grid_size.x * grid_size.y;
 
@@ -34,8 +33,7 @@ __kernel void clear_grids( __global GridCell * grid,
 __kernel void update_grids( __global Particle * particles,
                             __global GridCell * grid,
                            int num_particles,
-                           int2 grid_size )
-{
+                           int2 grid_size ) {
     int id = get_global_id(0);
 
     if (id < num_particles) {
@@ -72,11 +70,77 @@ __kernel void update_grids( __global Particle * particles,
     }
 }
 
+__kernel void update_particles( __global Particle * particles,
+                                __global GridCell * grid,
+                                int num_particles,
+                                int2 grid_size,
+                                float delta_time,
+                                float gravity ) {
+    int id = get_global_id(0);
+
+    if (id < num_particles) {
+
+        Particle P = particles[id];
+        if (P.id < 0) {
+            return;
+        }
+
+        P.velocity.x -= P.velocity.x * 0.1 * delta_time;
+        P.velocity.y -= P.velocity.y * 0.1 * delta_time;
+        P.velocity.y += gravity * delta_time;
+
+        int xc = (int)floor(P.position.x);
+        int yc = (int)floor(P.position.y);
+        int r = (int)ceil(P.radius + 0.5);
+
+        float totalMass = -P.mass;
+        float wPressX = 0.;
+        float wPressY = 0.;
+
+        for (int x=xc - r; x<=(xc + r); x++) {
+            for (int y=yc - r; y<=(yc + r); y++) {
+                if (x >= 0 && y >= 0 && x < grid_size.x && y < grid_size.y) {
+                    float dx = ((float)(x) + 0.5) - P.position.x, dy = ((float)(y) + 0.5) - P.position.y;
+                    float t = 1. - sqrt(dx*dx+dy*dy) / P.radius;
+                    if (t > 0.) {
+                        int grid_index = y * grid_size.x + x;
+                        __global int * GC = (__global int*)(grid + grid_index);
+                        float mass = TO_FLOAT(GC[0]) * t;
+                        float heat = TO_FLOAT(GC[1]) * t;
+                        float2 velocity = (float2)(TO_FLOAT(GC[2]) * t, TO_FLOAT(GC[3]) * t);
+                        float4 types = (float4)(TO_FLOAT(GC[4]) * t, TO_FLOAT(GC[5]) * t, TO_FLOAT(GC[6]) * t, TO_FLOAT(GC[7]) * t);
+
+                        totalMass += mass;
+
+                        wPressX += -dx * mass;
+                        wPressY += -dy * mass;
+                    }
+                }
+            }
+        }
+
+        wPressX /= P.mass;
+        wPressY /= P.mass;
+
+        P.velocity.x += wPressX * delta_time;
+        P.velocity.y += wPressY * delta_time;
+
+        P.position.x += P.velocity.x * delta_time;
+        P.position.y += P.velocity.y * delta_time;
+
+        if (P.position.y >= (float)grid_size.y) {
+            P.id = -1;
+        }
+
+        particles[id] = P;
+
+    }                                    
+}
+
 __kernel void render_main( __write_only image2d_t out_color,
                              int2 render_size,
                              __global GridCell * grid,
-                             int2 grid_size )
-{
+                             int2 grid_size ) {
     int id = get_global_id(0);
     int n = render_size.x * render_size.y;
 
@@ -85,11 +149,15 @@ __kernel void render_main( __write_only image2d_t out_color,
         int x = id % render_size.x;
         int y = (id - x) / render_size.x;
 
-        int grid_index = y * grid_size.x + x;
-        __global GridCell * GC = grid + grid_index;
-        float heat = TO_FLOAT(GC->heat);
+        float4 clr = (float4)(0., 0.1 * (float)y / (float)render_size.y, 0.1 * (float)x / (float)render_size.x, 1.);
 
-        float4 clr = (float4)(heat, 0.1 * (float)y / (float)render_size.y, 0.1 * (float)x / (float)render_size.x, 1.);
+        if (x >= 0 && y >= 0 && x < grid_size.x && y < grid_size.y) {
+            int grid_index = y * grid_size.x + x;
+            __global GridCell * GC = grid + grid_index;
+            float heat = TO_FLOAT(GC->heat);
+
+            clr.x += heat / 5.;
+        }
 
         clr = clamp(clr, (float4)(0.), (float4)(1.));
         write_imagef(out_color, (int2)(x, y), clr);
