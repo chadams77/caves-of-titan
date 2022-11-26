@@ -398,8 +398,17 @@ public:
     map<string, cl::Kernel*> functions;
     CLContext * context;
 
-    CLProgram(CLContext & _context, string filename, bool isSDF = false) {
+    CLProgram(CLContext * _context, string filename) {
+        context = _context;
+        init(filename);
+    }
+
+    CLProgram(CLContext & _context, string filename) {
         context = &_context;
+        init(filename);
+    }
+
+    void init(string filename) {
         ifstream file((string("kernels/") + filename + ".cl").c_str());
         stringstream buffer;
         buffer << file.rdbuf();
@@ -630,6 +639,13 @@ public:
     void writeSync() {
         cl::Event event;
         cl_int err = program->queue.enqueueWriteBuffer(*buffer, true, 0, dataSize, data, NULL, &event);
+        program->context->ReportError(err, "writeSync: ");
+        event.wait();
+    }
+
+    void writeSync(size_t offset, size_t size, const void * writeData) {
+        cl::Event event;
+        cl_int err = program->queue.enqueueWriteBuffer(*buffer, true, offset, size, writeData, NULL, &event);
         program->context->ReportError(err, "writeSync: ");
         event.wait();
     }

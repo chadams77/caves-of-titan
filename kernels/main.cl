@@ -49,7 +49,7 @@ __kernel void update_grids( __global Particle * particles,
         int r = (int)ceil(P.radius + 0.5);
 
         for (int x=xc - r; x<=(xc + r); x++) {
-            for (int y=xc - r; y<=(yc + r); y++) {
+            for (int y=yc - r; y<=(yc + r); y++) {
                 if (x >= 0 && y >= 0 && x < grid_size.x && y < grid_size.y) {
                     float dx = ((float)(x) + 0.5) - P.position.x, dy = ((float)(y) + 0.5) - P.position.y;
                     float t = 1. - sqrt(dx*dx+dy*dy) / P.radius;

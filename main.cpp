@@ -16,11 +16,7 @@ using std::cout;
 using std::endl;
 using std::map;
 using std::vector;
-using std::unordered_map;
 using std::string;
-using std::stringstream;
-using std::ifstream;
-using std::ofstream;
 
 GLuint WINDOW_WIDTH = 1024;
 GLuint WINDOW_HEIGHT = 1024;
@@ -31,21 +27,20 @@ bool FULLSCREEN = false;
 map<GLuint, bool> keyDown, lastKeyDown;
 
 // Callbacks
-void onWindowResize (GLFWwindow* window, int width, int height)
-{
+void onWindowResize (GLFWwindow* window, int width, int height) {
     WINDOW_WIDTH = (GLuint)width;
     WINDOW_HEIGHT = (GLuint)height;
     WINDOW_RESIZED = true;
 }
 
-void onKeyboard (GLFWwindow* window, int key, int scancode, int action, int mods)
-{
+void onKeyboard (GLFWwindow* window, int key, int scancode, int action, int mods) {
     keyDown[key] = action == GLFW_PRESS;
 }
 ////////////
 
 // Mirror classes for transfering data to/from kernels
 class GridCell {
+public:
     CLInt mass;
     CLInt heat;
     CLInt2 velocity; // 4
@@ -54,6 +49,7 @@ class GridCell {
 };
 
 class Particle {
+public:
     CLInt id;
     CLFloat2 position;
     CLFloat radius; // 4
@@ -70,12 +66,60 @@ CLInt NUM_PARTICLES = 32768;
 CLInt2 GRID_SIZE(2048, 2048);
 ////////////
 
-int main(void)
+CLContext * clContext;
+CLProgram * program;
+CLImageGL * outImage;
+CLBuffer * particleBfr;
+CLBuffer * gridBfr;
+GLFWwindow * window;
+GLFWmonitor * monitor;
+const GLFWvidmode * mode;
+double deltaTime = 1. / 60.;
+int newParticleIndex = 0;
+bool anyParticlesAdded = false;
+
+//////////
+
+void setFullscreen (bool flag) {
+    if (flag) {
+        glfwMaximizeWindow(window);
+        mode = glfwGetVideoMode(monitor);
+        deltaTime = 1. / (double)(mode->refreshRate);
+        glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+        FULLSCREEN = true;
+    }
+    else {
+        mode = glfwGetVideoMode(monitor);
+        deltaTime = 1. / (double)(mode->refreshRate);
+        glfwSetWindowMonitor(window, NULL, 0, 0, mode->width, mode->height, mode->refreshRate);
+        glfwRestoreWindow(window);
+        FULLSCREEN = false;
+    }
+}
+
+void handleWindowResize () {
+    if (WINDOW_RESIZED) {
+        delete outImage;
+        outImage = new CLImageGL(program, WINDOW_WIDTH, WINDOW_HEIGHT, MEMORY_WRITE);
+        glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
+        WINDOW_RESIZED = false;
+    }
+}
+
+void addParticle (Particle & P) {
+    anyParticlesAdded = true;
+    P.id = newParticleIndex;
+    particleBfr->writeSync(newParticleIndex * sizeof(Particle), sizeof(Particle), (void *)&P);
+    newParticleIndex += 1;
+    if (newParticleIndex >= NUM_PARTICLES) {
+        newParticleIndex = 0;
+    }
+}
+
+#define RAND ((float)(rand() % 12347) / 12347.)
+
+int main (void)
 {
-    const GLenum PIXEL_FORMAT = GL_RGBA;
-
-    GLFWwindow* window;
-
     if (!glfwInit()) {
         return -1;
     }
@@ -91,48 +135,46 @@ int main(void)
     glfwSetWindowSizeCallback(window, onWindowResize);
     glfwSetKeyCallback(window, onKeyboard);
 
-    CLContext cl_context;
+    clContext = new CLContext();
 
-    CLProgram program(cl_context, "main");
+    program = new CLProgram(clContext, "main");
 
-    CLImageGL *outImage = new CLImageGL(&program, WINDOW_WIDTH, WINDOW_HEIGHT, MEMORY_WRITE);
+    outImage = new CLImageGL(program, WINDOW_WIDTH, WINDOW_HEIGHT, MEMORY_WRITE);
 
-    CLBuffer particleBfr(&program, NUM_PARTICLES, sizeof(Particle), MEMORY_READ_WRITE);
-    CLBuffer gridBfr(&program, GRID_SIZE.x * GRID_SIZE.y, sizeof(GridCell), MEMORY_READ_WRITE);
+    particleBfr = new CLBuffer(program, NUM_PARTICLES, sizeof(Particle), MEMORY_READ_WRITE);
+    gridBfr     = new CLBuffer(program, GRID_SIZE.x * GRID_SIZE.y, sizeof(GridCell), MEMORY_READ_WRITE);
 
-    particleBfr.writeSync();
-    gridBfr.writeSync();
+    particleBfr->writeSync();
+    gridBfr->writeSync();
 
-    GLFWmonitor * monitor = glfwGetPrimaryMonitor();
-    const GLFWvidmode * mode = glfwGetVideoMode(monitor);
+    monitor = glfwGetPrimaryMonitor();
+    mode = glfwGetVideoMode(monitor);
 
-    double deltaTime = 1. / (double)(mode->refreshRate);
+    deltaTime = 1. / (double)(mode->refreshRate);
+
+    for (int i=0; i<1000; i++) {
+        Particle P;
+        P.position.x = RAND * 1000.;
+        P.position.y = RAND * 1000.;
+        P.radius = 5. + RAND * 5.;
+        P.mass = P.radius * P.radius;
+        P.heat = 5. + RAND * 5.;
+        P.velocity.x = 0.;
+        P.velocity.y = 0.;
+        P.types.x = 1.;
+        P.types.y = 0.;
+        P.types.z = 0.;
+        P.types.w = 0.;
+        addParticle(P);
+    }
 
     while (!glfwWindowShouldClose(window)) {
 
         if (lastKeyDown[GLFW_KEY_F11] && !keyDown[GLFW_KEY_F11]) {
-            if (!FULLSCREEN) {
-                glfwMaximizeWindow(window);
-                mode = glfwGetVideoMode(monitor);
-                deltaTime = 1. / (double)(mode->refreshRate);
-                glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
-                FULLSCREEN = true;
-            }
-            else {
-                mode = glfwGetVideoMode(monitor);
-                deltaTime = 1. / (double)(mode->refreshRate);
-                glfwSetWindowMonitor(window, NULL, 0, 0, mode->width, mode->height, mode->refreshRate);
-                glfwRestoreWindow(window);
-                FULLSCREEN = false;
-            }
+            setFullscreen(!FULLSCREEN);
         }
 
-        if (WINDOW_RESIZED) {
-            delete outImage;
-            outImage = new CLImageGL(&program, WINDOW_WIDTH, WINDOW_HEIGHT, MEMORY_WRITE);
-            glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
-            WINDOW_RESIZED = false;
-        }
+        handleWindowResize();
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -144,43 +186,43 @@ int main(void)
 
         CLInt2 renderSize(WINDOW_WIDTH, WINDOW_HEIGHT);
         
-        program.setArg("update_grids", 0, &particleBfr);
-        program.setArg("update_grids", 1, &gridBfr);
-        program.setArg("update_grids", 2, NUM_PARTICLES);
-        program.setArg("update_grids", 3, GRID_SIZE);
+        program->setArg("update_grids", 0, particleBfr);
+        program->setArg("update_grids", 1, gridBfr);
+        program->setArg("update_grids", 2, NUM_PARTICLES);
+        program->setArg("update_grids", 3, GRID_SIZE);
 
-        program.setArg("clear_grids", 0, &gridBfr);
-        program.setArg("clear_grids", 1, GRID_SIZE);
+        program->setArg("clear_grids", 0, gridBfr);
+        program->setArg("clear_grids", 1, GRID_SIZE);
 
-        program.setArg("render_main", 0, outImage);
-        program.setArg("render_main", 1, renderSize);
-        program.setArg("render_main", 2, &gridBfr);
-        program.setArg("render_main", 3, GRID_SIZE);
+        program->setArg("render_main", 0, outImage);
+        program->setArg("render_main", 1, renderSize);
+        program->setArg("render_main", 2, gridBfr);
+        program->setArg("render_main", 3, GRID_SIZE);
 
-        program.acquireImageGL(outImage);
+        program->acquireImageGL(outImage);
 
-        if (!program.callFunction("clear_grids", GRID_SIZE.x * GRID_SIZE.y)) {
+        if (!program->callFunction("clear_grids", GRID_SIZE.x * GRID_SIZE.y)) {
             exit(0);
         }
 
-        if (!program.callFunction("update_grids", NUM_PARTICLES)) {
+        if (!program->callFunction("update_grids", NUM_PARTICLES)) {
             exit(0);
         }
 
-        if (!program.callFunction("render_main", WINDOW_WIDTH * WINDOW_HEIGHT)) {
+        if (!program->callFunction("render_main", WINDOW_WIDTH * WINDOW_HEIGHT)) {
             exit(0);
         }
 
-        program.releaseImageGL(outImage);
+        program->releaseImageGL(outImage);
 
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, outImage->glTex);
 
         glBegin(GL_QUADS);
-            glTexCoord2f(0., 0.); glVertex2f(0., 0.);
-            glTexCoord2f(0., 1.); glVertex2f(0., 1.);
-            glTexCoord2f(1., 1.); glVertex2f(1., 1.);
-            glTexCoord2f(1., 0.); glVertex2f(1., 0.);
+            glTexCoord2f(0., 1.); glVertex2f(0., 0.);
+            glTexCoord2f(0., 0.); glVertex2f(0., 1.);
+            glTexCoord2f(1., 0.); glVertex2f(1., 1.);
+            glTexCoord2f(1., 1.); glVertex2f(1., 0.);
         glEnd();
 
         glfwSwapBuffers(window);
@@ -189,6 +231,12 @@ int main(void)
 
         glfwPollEvents();
     }
+
+    delete gridBfr;
+    delete particleBfr;
+    delete outImage;
+    delete program;
+    delete clContext;
 
     glfwTerminate();
     return 0;
