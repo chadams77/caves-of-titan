@@ -636,6 +636,13 @@ public:
         event.wait();
     }
 
+    void readSync(size_t offset, size_t size, void * readData) {
+        cl::Event event;
+        cl_int err = program->queue.enqueueReadBuffer(*buffer, true, offset, size, readData, NULL, &event);
+        program->context->ReportError(err, "readSync: ");
+        event.wait();
+    }
+
     void writeSync() {
         cl::Event event;
         cl_int err = program->queue.enqueueWriteBuffer(*buffer, true, 0, dataSize, data, NULL, &event);

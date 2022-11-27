@@ -18,8 +18,24 @@ typedef struct __attribute__((packed)) _GridCell {
     int2 velocity; // 4
     int4 types; // 8 // x:rock, y:oil, z:fire/smoke, w:water/steam
     int maxID;
-    int3 dummy; // 12
+    int trace;
+    int2 dummy; // 12
 } GridCell;
+
+typedef struct __attribute__((packed)) _Trace {
+    int num;
+    float2 position;
+    int dummy; // 4
+} Trace;
+
+typedef struct __attribute__((packed)) _Player {
+    float2 pos;
+    float2 vel; // 4
+    float radius;
+    float health;
+    int moving;
+    int dummy; // 8
+} Player;
 
 __kernel void clear_grids( __global GridCell * grid,
                            int2 grid_size ) {
@@ -30,13 +46,14 @@ __kernel void clear_grids( __global GridCell * grid,
         __global int * GC = (__global int*)(grid + id);
         GC[0] = GC[1] = GC[2] = GC[3] = GC[4] = GC[5] = GC[6] = GC[7] = 0;
         GC[8] = -1;
+        GC[9] = 0;
     }
 }
 
 __kernel void update_grids( __global Particle * particles,
                             __global GridCell * grid,
-                           int num_particles,
-                           int2 grid_size ) {
+                            int num_particles,
+                            int2 grid_size ) {
     int id = get_global_id(0);
 
     if (id < num_particles) {
@@ -73,6 +90,193 @@ __kernel void update_grids( __global Particle * particles,
         }
 
     }
+   
+}
+
+bool collisionDirRock ( __global GridCell * grid, int2 grid_size, float2 pos, float radius, int2 dir ) {
+
+    int xc = (int)floor(pos.x);
+    int yc = (int)floor(pos.y);
+    int r = (int)ceil(radius + 1.);
+
+    for (int x=xc - r; x<=(xc + r); x++) {
+        for (int y=yc - r; y<=(yc + r); y++) {
+            if (dir.x < 0 && x >= xc) {
+                continue;
+            }
+            if (dir.y < 0 && y >= yc) {
+                continue;
+            }
+            if (dir.x > 0 && x <= xc) {
+                continue;
+            }
+            if (dir.y > 0 && y <= yc) {
+                continue;
+            }
+            if (x >= 0 && y >= 0 && x < grid_size.x && y < grid_size.y) {
+                float dx = ((float)(x) + 0.5) - pos.x, dy = ((float)(y) + 0.5) - pos.y;
+                float t = 1. - (dx*dx+dy*dy / radius*radius);
+                if (t > 0.) {
+                    int grid_index = y * grid_size.x + x;
+                    __global int * GC = (__global int*)(grid + grid_index);
+                    if (GC[4] > 0) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    return false;
+
+}
+
+__kernel void update_trace( __global GridCell * grid,
+                            int2 grid_size,
+                            __global Trace * trace,
+                            int num_trace,
+                            float2 world_mouse,
+                            float delta_time,
+                            float2 player0,
+                            float gravity ) {
+
+    int id = get_global_id(0);
+
+    if (id == 0) {
+
+        float traceR = 4.;
+        float2 vel = (world_mouse - player0) * (float2)2.;
+        float speed = length(vel);
+        if (speed > 1.) {
+            if (speed > 400.) {
+                vel /= speed;
+                speed = 400.;
+                vel *= speed;
+            }
+
+            for (int i=0; i<num_trace; i++) {
+                vel.y += gravity * delta_time;
+                vel.x -= vel.x * 0.5 * delta_time;
+                vel.y -= vel.y * 0.5 * delta_time;
+
+                player0 += vel * delta_time;
+
+                if (vel.y < 0.) {
+                    if (collisionDirRock(grid, grid_size, player0, traceR, (int2)(0, -1))) {
+                        player0.y += traceR;
+                        vel.y = -vel.y * 0.5;
+                    }
+                }
+                else if (vel.y > 0.) {
+                    if (collisionDirRock(grid, grid_size, player0, traceR, (int2)(0, 1))) {
+                        player0.y -= traceR;
+                        vel.y = -vel.y * 0.5;
+                        break;
+                    }
+                }
+                if (vel.x < 0.) {
+                    if (collisionDirRock(grid, grid_size, player0, traceR, (int2)(-1, 0))) {
+                        player0.x += traceR;
+                        vel.x = -vel.x * 0.5;
+                    }
+                }
+                else if (vel.x > 0.) {
+                    if (collisionDirRock(grid, grid_size, player0, traceR, (int2)(1, 0))) {
+                        player0.x -= traceR;
+                        vel.x = -vel.x * 0.5;
+                    }
+                }
+
+                trace[i].num = i;
+                trace[i].position = player0;
+
+                int xc = (int)floor(player0.x);
+                int yc = (int)floor(player0.y);
+                int r = (int)ceil(traceR + 1.);
+
+                for (int x=xc - r; x<=(xc + r); x++) {
+                    for (int y=yc - r; y<=(yc + r); y++) {
+                        if (x >= 0 && y >= 0 && x < grid_size.x && y < grid_size.y) {
+                            float dx = ((float)(x) + 0.5) - player0.x, dy = ((float)(y) + 0.5) - player0.y;
+                            float t = 1. - sqrt(dx*dx+dy*dy) / traceR;
+                            if (t > 0.) {
+                                t = (float)pow((double)t, 0.5);
+                                int grid_index = y * grid_size.x + x;
+                                __global int * GC = (__global int*)(grid + grid_index);
+                                atomic_add(GC + 9, TO_FIXED(0.25));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    }
+
+}
+
+__kernel void update_player( __global GridCell * grid,
+                             int2 grid_size,
+                             float delta_time,
+                             float gravity,
+                             __global Player * player ) {
+
+    if (player->moving == 0) {
+        return;
+    }
+
+    int id = get_global_id(0);
+
+    if (id == 0) {
+
+        float traceR = 4.;
+        float2 vel = player->vel;
+        float2 player0 = player->pos;
+
+        float dt = delta_time / 10.;
+
+        for (int i=0; i<10; i++) {
+
+            vel.y += gravity * dt;
+            vel.x -= vel.x * 0.5 * dt;
+            vel.y -= vel.y * 0.5 * dt;
+
+            player0 += vel * dt;
+
+            if (vel.y < 0.) {
+                if (collisionDirRock(grid, grid_size, player0, traceR, (int2)(0, -1))) {
+                    player0.y += traceR;
+                    vel.y = -vel.y * 0.5;
+                }
+            }
+            else if (vel.y > 0.) {
+                if (collisionDirRock(grid, grid_size, player0, traceR, (int2)(0, 1))) {
+                    player0.y -= traceR;
+                    vel.y = -vel.y * 0.5;
+                    player->moving = 0;
+                    break;
+                }
+            }
+            if (vel.x < 0.) {
+                if (collisionDirRock(grid, grid_size, player0, traceR, (int2)(-1, 0))) {
+                    player0.x += traceR;
+                    vel.x = -vel.x * 0.5;
+                }
+            }
+            else if (vel.x > 0.) {
+                if (collisionDirRock(grid, grid_size, player0, traceR, (int2)(1, 0))) {
+                    player0.x -= traceR;
+                    vel.x = -vel.x * 0.5;
+                }
+            }
+
+        }
+
+        player->pos = player0;
+        player->vel = vel;
+
+    }
+
 }
 
 __kernel void update_particles( __global Particle * particles,
@@ -131,7 +335,7 @@ __kernel void update_particles( __global Particle * particles,
 
                         if (types.x > 0.01) {
                             mass *= 100.;
-                            stick += types.x * 10.;
+                            stick += types.x * 100.;
                         }
                         if (types.y > 0.01) {
                             stick += types.y * 0.025;
@@ -171,9 +375,17 @@ __kernel void update_particles( __global Particle * particles,
             }
         }
         if (P.types.y > 1.5) {
-            P.radius -= P.radius * delta_time * 0.1;
-            if (P.radius < 1.5f) {
-                P.id = -1;
+            if (P.types.y > 2.5) {
+                P.radius -= P.radius * delta_time * 0.02;
+                if (P.radius < 1.5f) {
+                    P.id = -1;
+                }
+            }
+            else {
+                P.radius -= P.radius * delta_time * 0.2;
+                if (P.radius < 1.5f) {
+                    P.id = -1;
+                }
             }
         }
         if (P.heat <= 0.f) {
@@ -182,12 +394,13 @@ __kernel void update_particles( __global Particle * particles,
                 P.id = -1;
             }
         }
-        if (P.types.x > 0.5 && P.heat > 5.) {
+        if (P.types.x > 0.5 && P.heat > 2.) {
             P.types = (float4)(0., 0., 1., 0.);
         }
         if (P.types.y > 0.5 && P.heat > 0.1) {
             P.heat = 1.;
             P.radius *= 1.75;
+            P.mass *= 10.;
             P.types = (float4)(0., 0., 1., 0.);
         }
 
@@ -236,34 +449,6 @@ __kernel void render_main( __write_only image2d_t out_color,
     int id = get_global_id(0);
     int n = render_size.x * render_size.y;
 
-    for (int k=0; k<2; k++) {
-        if (CAMX(0) >= 0 && CAMX(grid_size.x) <= (float)(render_size.x)) {
-            camera.x = 0.5 * (float)grid_size.x;
-            camera.z = min(camera.z, ((float)grid_size.x) / ((float)render_size.x));
-            break;
-        }
-        else if (CAMX(0) > 0) {
-            camera.x += CAMX(0);
-        }
-        else if (CAMX(grid_size.x) < (float)(grid_size.x)) {
-            camera.x -= (float)(grid_size.x) - CAMX(grid_size.x);
-        }
-    }
-
-    for (int k=0; k<2; k++) {
-        if (CAMY(0) >= 0 && CAMY(grid_size.y) <= (float)(render_size.y)) {
-            camera.y = 0.5 * (float)grid_size.y;
-            camera.z = min(camera.z, ((float)grid_size.y) / ((float)render_size.y));
-            break;
-        }
-        else if (CAMY(0) > 0) {
-            camera.y += CAMY(0);
-        }
-        else if (CAMY(grid_size.y) < (float)(grid_size.y)) {
-            camera.y -= (float)(grid_size.y) - CAMY(grid_size.y);
-        }
-    }
-
     if (id < n) {
 
         int sx = id % render_size.x;
@@ -275,7 +460,7 @@ __kernel void render_main( __write_only image2d_t out_color,
         int x = (int)round(cx);
         int y = (int)round(cy);
 
-        float yt = 1. - (float)y / (float)render_size.y;
+        float yt = 1. - ((float)y / (float)render_size.y) * 0.5;
         float4 clr = (float4)(yt + (1. - yt) * 0.5, yt + (1. - yt) * 0.5, yt + (1. - yt) * 0.1, 1.) * (float4)(0.4);
 
         if (x >= 0 && y >= 0 && x < grid_size.x && y < grid_size.y) {
@@ -286,6 +471,7 @@ __kernel void render_main( __write_only image2d_t out_color,
             float oil = TO_FLOAT(GC->types.y);
             float fire = TO_FLOAT(GC->types.z);
             float water = TO_FLOAT(GC->types.w);
+            float trace = TO_FLOAT(GC->trace);
 
             if (rocks > 0.0) {
                 int rand1 = (GC->maxID * 17) % 3;
@@ -316,6 +502,8 @@ __kernel void render_main( __write_only image2d_t out_color,
             clr.x += min(heatT * 4., 1.);
             clr.y += min(heatT * 2., 1.);
             clr.z += min(heatT * 1., 1.);
+
+            clr.g += trace;
         }
 
         clr = clamp(clr, (float4)(0.), (float4)(1.));

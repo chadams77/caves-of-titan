@@ -45,12 +45,24 @@ public:
     }
 };
 
+class Trace {
+public:
+    CLInt index;
+    CLFloat2 position;
+    CLInt dummy;
+    Trace() {
+        index = 0;
+    }
+};
+
 class Player {
 public:
     CLFloat2 position;
     CLFloat2 velocity; // 4
     CLFloat radius;
     CLFloat health;
+    CLInt moving;
+    CLInt dummy; // 8;
     Player() {
         reset(0, 0);
     }
@@ -62,6 +74,7 @@ public:
         position.x = x; position.y = y;
         radius = 4.;
         health = 100.;
+        moving = 0;
     }
 };
 
@@ -69,6 +82,7 @@ CLInt NUM_PARTICLES = 512 * 512;
 CLInt2 GRID_SIZE(2048, 2048);
 CLFloat GRAVITY = 64.;
 CLFloat3 CAMERA;
+CLInt NUM_TRACE = 32;
 
 #define RAND ((float)(rand() % 12347) / 12347.)
 
@@ -79,6 +93,8 @@ CLProgram * program;
 CLImageGL * outImage;
 CLBuffer * particleBfr;
 CLBuffer * gridBfr;
+CLBuffer * traceBfr;
+CLBuffer * playerBfr;
 GLFWwindow * window;
 GLFWmonitor * monitor;
 const GLFWvidmode * mode;
@@ -98,6 +114,22 @@ GLuint REFRESH_RATE = 60.;
 map<GLuint, bool> keyDown, lastKeyDown;
 
 Player player;
+
+class FireLoc {
+public:
+    CLFloat2 pos;
+    FireLoc() {
+        pos.x = pos.y = 0.;
+    }
+    FireLoc(const FireLoc & b) {
+        pos.x = b.pos.x;
+        pos.y = b.pos.y;
+    }
+    FireLoc(CLFloat x, CLFloat y) {
+        pos.x = x; pos.y = y;
+    }
+};
+vector<FireLoc> fireLocations;
 
 //////////
 
@@ -227,7 +259,30 @@ void updatePlayerGfx () {
     delete data;
 }
 
+void oilSpray (CLFloat2 pos, CLFloat velx, CLFloat vely) {
+    int count = 4;
+    Particle * data = new Particle[count];
+    for (int i=0; i<count; i++) {
+        float r = (RAND * 2. + 2.) * 0.5;
+        data[i].velocity.x = velx * r;
+        data[i].velocity.y = vely * r;
+        data[i].position.x = pos.x;
+        data[i].position.y = pos.y;
+        data[i].types.x = 0.;
+        data[i].types.y = 3.;
+        data[i].types.z = 0.;
+        data[i].types.w = 0.;
+        data[i].mass = 10.;
+        data[i].radius = player.radius;
+        data[i].heat = 0.;
+    }
+    addParticles(data, count);
+    delete data;
+}
+
 void fastForward(int frames, CLFloat dt) {
+    CLFloat2 wmp;
+    wmp.x = 256.; wmp.y = 256.;
     for (int k=0; k<frames; k++) {
         program->setArg("update_grids", 0, particleBfr);
         program->setArg("update_grids", 1, gridBfr);
@@ -330,6 +385,11 @@ void initLevel() {
                     prob = 0.;
                 }
             }
+            if (prob > 0. && prob < 0.33 && !(x <= 3 || y <= 3 || x >= (size - 3) || y >= (size - 3))) {
+                if (RAND < 0.00015) {
+                    fireLocations.push_back(FireLoc(((float)x + 0.5f) / (float)size * (float)GRID_SIZE.x, ((float)y + 0.5f) / (float)size * (float)GRID_SIZE.y));
+                }
+            }
             grid[x + y * size] = (RAND < prob || x <= 3 || y <= 3 || x >= (size - 3) || y >= (size - 3)) ? 1 : 0;
         }
     }
@@ -403,7 +463,59 @@ void initLevel() {
 
     prtIndex0 = newParticleIndex;
 
-    //fastForward(60 * 10, 1./120.);
+    fastForward(60 * 1, 1./60.);
+}
+
+#define CAMX(_X, _C) (((float)(_X) - (float)_C.x) / _C.z + ((float)WINDOW_WIDTH) * 0.5)
+#define CAMY(_X, _C) (((float)(_X) - (float)_C.y) / _C.z + ((float)WINDOW_HEIGHT) * 0.5)
+#define ICAMX(_X, _C) (((float)(_X) - 0.5 * (float)WINDOW_WIDTH) * _C.z + ((float)_C.x))
+#define ICAMY(_X, _C) (((float)(_X) - 0.5 * (float)WINDOW_HEIGHT) * _C.z + ((float)_C.y))
+
+void boundCamera(CLFloat3 & cameraIn, CLFloat3 & cameraOut) {
+
+    float gsx = (float)GRID_SIZE.x / cameraIn.z;
+    float gsy = (float)GRID_SIZE.y / cameraIn.z;
+
+    cameraOut.x = cameraIn.x;
+    cameraOut.y = cameraIn.y;
+    cameraOut.z = cameraIn.z;
+
+    if (gsx <= (float)WINDOW_WIDTH) {
+        float lcz = cameraOut.z;
+        cameraOut.z = min(cameraOut.z, gsx / ((float)WINDOW_WIDTH));
+        cameraOut.x = 0.5 * (float)GRID_SIZE.x;
+    }
+
+    if (gsy <= (float)WINDOW_HEIGHT) {
+        float lcz = cameraOut.z;
+        cameraOut.z = min(cameraOut.z, gsy / ((float)WINDOW_HEIGHT));
+        cameraOut.y = 0.5 * (float)GRID_SIZE.y;
+    }
+
+    float tmp;
+    
+    tmp = CAMX(0., cameraOut);
+    if (tmp >= 0.) {
+        cameraOut.x += tmp * cameraOut.z;
+    }
+
+    tmp = CAMY(0., cameraOut);
+    if (tmp >= 0.) {
+        cameraOut.y += tmp * cameraOut.z;
+    }
+
+    tmp = CAMX(GRID_SIZE.x, cameraOut);
+    if (tmp <= (float)WINDOW_WIDTH) {
+        tmp -= (float)WINDOW_WIDTH;
+        cameraOut.x += tmp * cameraOut.z;
+    }
+
+    tmp = CAMY(GRID_SIZE.y, cameraOut);
+    if (tmp <= (float)WINDOW_HEIGHT) {
+        tmp -= (float)WINDOW_HEIGHT;
+        cameraOut.y += tmp * cameraOut.z;
+    }
+
 }
 
 int main (void)
@@ -433,9 +545,12 @@ int main (void)
 
     particleBfr = new CLBuffer(program, NUM_PARTICLES, sizeof(Particle), MEMORY_READ_WRITE);
     gridBfr     = new CLBuffer(program, GRID_SIZE.x * GRID_SIZE.y, sizeof(GridCell), MEMORY_READ_WRITE);
+    traceBfr    = new CLBuffer(program, NUM_TRACE, sizeof(Trace), MEMORY_READ_WRITE);
+    playerBfr   = new CLBuffer(program, 1, sizeof(Player), MEMORY_READ_WRITE);
 
     particleBfr->writeSync();
     gridBfr->writeSync();
+    traceBfr->writeSync();
 
     monitor = glfwGetPrimaryMonitor();
     mode = glfwGetVideoMode(monitor);
@@ -464,26 +579,83 @@ int main (void)
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
 
-        /*if (gTime > 5.) {
-            CLFloat2 pos;
-            pos.x = CAMERA.x;
-            pos.y = CAMERA.y;
-            updateFireball(pos, 16.);
-        }*/
+        for (size_t i=0; i<fireLocations.size(); i++) {
+            updateFireball(fireLocations[i].pos, 24.);
+        }
 
         updatePlayerGfx();
 
-        //float _r = sin(gTime) * 0.4 + 1.3;
-        //float _a = (gTime * 1.37);
-        //CAMERA.x = (float)GRID_SIZE.x * 0.5 + cos(_a) * _r * 512.;
-        //CAMERA.y = (float)GRID_SIZE.y * 0.5 + sin(_a) * _r * 512.;
+        CLFloat3 camera2;
+        boundCamera(CAMERA, camera2);
+
+        double mouseX, mouseY;
+        glfwGetCursorPos(window, &mouseX, &mouseY);
+
+        CLFloat2 worldMouse;
+        worldMouse.x = ICAMX(mouseX, camera2);
+        worldMouse.y = ICAMY(mouseY, camera2);
 
         CLInt2 renderSize(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        if (player.moving == 0 && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+            float velx = (worldMouse.x - player.position.x) * 2.;
+            float vely = (worldMouse.y - player.position.y) * 2.;
+            float speed = sqrt(velx*velx+vely*vely);
+            if (speed > 1.) {
+                if (speed > 400.) {
+                    velx /= speed;
+                    vely /= speed;
+                    speed = 400.;
+                    velx *= speed;
+                    vely *= speed;
+                }
+                player.moving = 1;
+                player.velocity.x = velx;
+                player.velocity.y = vely;
+            }
+        }
+        if (player.moving == 0) {
+            player.velocity.x = player.velocity.y = 0.;
+        }        
+        if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+            float velx = (worldMouse.x - player.position.x) * 2.;
+            float vely = (worldMouse.y - player.position.y) * 2.;
+            float speed = sqrt(velx*velx+vely*vely);
+            if (speed > 1.) {
+                if (speed > 400.) {
+                    velx /= speed;
+                    vely /= speed;
+                    speed = 400.;
+                    velx *= speed;
+                    vely *= speed;
+                }
+                oilSpray(player.position, velx + player.velocity.x, vely + player.velocity.y);
+            }
+        }
+
+        playerBfr->writeSync(0, sizeof(Player), (void *)&player);
         
         program->setArg("update_grids", 0, particleBfr);
         program->setArg("update_grids", 1, gridBfr);
         program->setArg("update_grids", 2, NUM_PARTICLES);
         program->setArg("update_grids", 3, GRID_SIZE);
+
+        if (player.moving == 0) {
+            program->setArg("update_trace", 0, gridBfr);
+            program->setArg("update_trace", 1, GRID_SIZE);
+            program->setArg("update_trace", 2, traceBfr);
+            program->setArg("update_trace", 3, NUM_TRACE);
+            program->setArg("update_trace", 4, worldMouse);
+            program->setArg("update_trace", 5, (CLFloat)deltaTime);
+            program->setArg("update_trace", 6, player.position);
+            program->setArg("update_trace", 7, GRAVITY);
+        }
+
+        program->setArg("update_player", 0, gridBfr);
+        program->setArg("update_player", 1, GRID_SIZE);
+        program->setArg("update_player", 2, (CLFloat)deltaTime);
+        program->setArg("update_player", 3, GRAVITY);
+        program->setArg("update_player", 4, playerBfr);
 
         program->setArg("clear_grids", 0, gridBfr);
         program->setArg("clear_grids", 1, GRID_SIZE);
@@ -499,7 +671,7 @@ int main (void)
         program->setArg("render_main", 1, renderSize);
         program->setArg("render_main", 2, gridBfr);
         program->setArg("render_main", 3, GRID_SIZE);
-        program->setArg("render_main", 4, CAMERA);
+        program->setArg("render_main", 4, camera2);
 
         program->acquireImageGL(outImage);
 
@@ -511,6 +683,16 @@ int main (void)
             exit(0);
         }
 
+        if (player.moving == 0) {
+            if (!program->callFunction("update_trace", 1)) {
+                exit(0);
+            }
+        }
+
+        if (!program->callFunction("update_player", 1)) {
+            exit(0);
+        }
+
         if (!program->callFunction("update_particles", NUM_PARTICLES)) {
             exit(0);
         }
@@ -518,6 +700,8 @@ int main (void)
         if (!program->callFunction("render_main", WINDOW_WIDTH * WINDOW_HEIGHT)) {
             exit(0);
         }
+
+        playerBfr->readSync(0, sizeof(Player), (void *)&player);
 
         program->releaseImageGL(outImage);
 
@@ -542,6 +726,8 @@ int main (void)
 
     delete gridBfr;
     delete particleBfr;
+    delete traceBfr;
+    delete playerBfr;
     delete outImage;
     delete program;
     delete clContext;
