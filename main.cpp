@@ -21,6 +21,7 @@ using std::vector;
 using std::string;
 using namespace irrklang;
 
+
 // Mirror classes for transfering data to/from kernels
 class GridCell {
 public:
@@ -694,7 +695,7 @@ int main (void)
         oilSpray(endPos, RAND * 10. - 5., 5. * RAND * 5.);
 
         double dx = endPos.x - player.position.x, dy = endPos.y - player.position.y;
-        if (sqrt(dx*dx+dy*dy) < 24.) {
+        if (sqrt(dx*dx+dy*dy) < ((float)GRID_SIZE.x / 48.f)) {
             hasWon = true;
         }
 
