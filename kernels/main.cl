@@ -170,6 +170,12 @@ __kernel void update_particles( __global Particle * particles,
                 P.id = -1;
             }
         }
+        if (P.types.y > 1.5) {
+            P.radius -= P.radius * delta_time * 0.1;
+            if (P.radius < 1.5f) {
+                P.id = -1;
+            }
+        }
         if (P.heat <= 0.f) {
             P.heat = 0.;
             if (P.types.z > 0.5) {

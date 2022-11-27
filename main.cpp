@@ -45,8 +45,28 @@ public:
     }
 };
 
-CLInt NUM_PARTICLES = 256 * 256;
-CLInt2 GRID_SIZE(1024, 1024);
+class Player {
+public:
+    CLFloat2 position;
+    CLFloat2 velocity; // 4
+    CLFloat radius;
+    CLFloat health;
+    Player() {
+        reset(0, 0);
+    }
+    Player(float x, float y) {
+        reset(x, y);
+    }
+    void reset(float x, float y) {
+        velocity.x = velocity.y = 0.;
+        position.x = x; position.y = y;
+        radius = 4.;
+        health = 100.;
+    }
+};
+
+CLInt NUM_PARTICLES = 512 * 512;
+CLInt2 GRID_SIZE(2048, 2048);
 CLFloat GRAVITY = 64.;
 CLFloat3 CAMERA;
 
@@ -73,8 +93,11 @@ GLuint WINDOW_HEIGHT = 1024;
 GLuint DATA_SIZE = WINDOW_WIDTH * WINDOW_HEIGHT * 4;
 bool WINDOW_RESIZED = false;
 bool FULLSCREEN = false;
+GLuint REFRESH_RATE = 60.;
 
 map<GLuint, bool> keyDown, lastKeyDown;
+
+Player player;
 
 //////////
 
@@ -92,14 +115,14 @@ void setFullscreen (bool flag) {
     if (flag) {
         glfwMaximizeWindow(window);
         mode = glfwGetVideoMode(monitor);
-        deltaTime = 1. / (double)(mode->refreshRate);
-        glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+        deltaTime = 1. / (double)(REFRESH_RATE);
+        glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, REFRESH_RATE);
         FULLSCREEN = true;
     }
     else {
         mode = glfwGetVideoMode(monitor);
-        deltaTime = 1. / (double)(mode->refreshRate);
-        glfwSetWindowMonitor(window, NULL, 0, 0, mode->width, mode->height, mode->refreshRate);
+        deltaTime = 1. / (double)(REFRESH_RATE);
+        glfwSetWindowMonitor(window, NULL, 0, 0, mode->width, mode->height, REFRESH_RATE);
         glfwRestoreWindow(window);
         FULLSCREEN = false;
     }
@@ -177,6 +200,33 @@ void updateFireball (CLFloat2 pos, CLFloat r) {
     delete data;
 }
 
+void updatePlayerGfx () {
+    CAMERA.x = player.position.x;
+    CAMERA.y = player.position.y;
+    CAMERA.z = 1.;
+
+    int count = 2;
+    Particle * data = new Particle[count];
+    CLFloat r = player.radius;
+    for (int i=0; i<count; i++) {
+        data[i].velocity.x = RAND * r * 2. - r;
+        data[i].velocity.y = RAND * r * 2. - r;
+        data[i].position.x = player.position.x + data[i].velocity.x / 5.;
+        data[i].position.y = player.position.y + data[i].velocity.y / 5.;
+        data[i].types.x = 0.;
+        data[i].types.y = 2.;
+        data[i].types.z = 0.;
+        data[i].types.w = 0.;
+        data[i].velocity.x = 0.;
+        data[i].velocity.y = 0.;
+        data[i].mass = 10.;
+        data[i].radius = r;
+        data[i].heat = 0.;
+    }
+    addParticles(data, count);
+    delete data;
+}
+
 void fastForward(int frames, CLFloat dt) {
     for (int k=0; k<frames; k++) {
         program->setArg("update_grids", 0, particleBfr);
@@ -208,18 +258,87 @@ void fastForward(int frames, CLFloat dt) {
     }
 }
 
+bool genMaze(int x, int y, int & tx, int & ty, int msize, int pathLen, bool * U) {
+    if (pathLen >= (msize * msize / 4 - 9)) {
+        tx = x;
+        ty = y;
+        return true;
+    }
+    if (pathLen == 1) {
+        int x2i = x + 1, y2i = y + 0;
+        int x2 = x + 1*2, y2 = y + 0*2;
+        U[x2i + y2i * msize] = true;
+        U[x2 + y2 * msize] = true;
+        if (genMaze(x2, y2, tx, ty, msize, pathLen+1, U)) {
+            return true;
+        }
+        U[x2i + y2i * msize] = false;
+        U[x2 + y2 * msize] = false;
+        return false;
+    }
+    int xo[4], yo[4];
+    xo[0] = -1; yo[0] = 0;
+    xo[1] = 1; yo[1] = 0;
+    xo[2] = 0; yo[2] = -1;
+    xo[3] = 0; yo[3] = 1;
+    for (int k=0; k<4; k++) {
+        int t, a = rand() % 4, b = rand() % 4;
+        t = xo[a]; xo[a] = xo[b]; xo[b] = t;
+        t = yo[a]; yo[a] = yo[b]; yo[b] = t;
+    }
+    for (int i=0; i<4; i++) {
+        int x2i = x + xo[i], y2i = y + yo[i];
+        int x2 = x + xo[i]*2, y2 = y + yo[i]*2;
+        if (x2 < 0 || y2 < 0 || x2 >= msize || y2 >= msize || U[x2i + y2i * msize] || U[x2 + y2 * msize]) {
+            continue;
+        }
+        U[x2i + y2i * msize] = true;
+        U[x2 + y2 * msize] = true;
+        if (genMaze(x2, y2, tx, ty, msize, pathLen+1, U)) {
+            return true;
+        }
+        U[x2i + y2i * msize] = false;
+        U[x2 + y2 * msize] = false;
+    }
+    return false;
+}
+
 void initLevel() {
     clearParticles();
 
-    int size = 256;
+    int size = 512;
+    int msize=16, mstartx=0, mstarty=0, mendx, mendy;
+
+    bool * open = new bool[msize * msize];
+    for (int i=0; i<(msize*msize); i++) {
+        open[i] = false;
+    }
+    open[mstartx + mstarty*msize] = 1;
+    genMaze(mstartx, mstarty, mendx, mendy, msize, 1, open);
+
+    int msz = size / msize;
+
     int * grid = new int[size * size];
     int * grid2 = new int[size * size];
     for (int x=0; x<size; x++) {
         for (int y=0; y<size; y++) {
-            grid[x + y * size] = (RAND < 0.49 || x <= 5 || y <= 5 || x >= (size - 5) || y >= (size - 5)) ? 1 : 0;
+            float prob = 0.55;
+            int mx = x / msz, my = y / msz;
+            if (open[mx + my * msize]) {
+                prob = 0.32;
+                if (mx == mstartx && my == mstarty) {
+                    prob = 0.;
+                }
+            }
+            grid[x + y * size] = (RAND < prob || x <= 3 || y <= 3 || x >= (size - 3) || y >= (size - 3)) ? 1 : 0;
         }
     }
-    for (int k=0; k<20; k++) {
+
+    player.reset((((float)mstartx) + 0.5) * (float)msz / (float)size * (float)GRID_SIZE.x, (((float)mstarty) + 0.9) * (float)msz / (float)size * (float)GRID_SIZE.y);
+
+    delete open;
+
+    for (int k=0; k<40; k++) {
         for (int x=0; x<size; x++) {
             for (int y=0; y<size; y++) {
                 int off = x + y * size;
@@ -245,37 +364,12 @@ void initLevel() {
         grid = grid2;
         grid2 = tmp;
     }
-    for (int x=0; x<size; x++) {
-        for (int y=0; y<size; y++) {
-            int off = x + y * size;
-            int above = 0, below = 0;
-            for (int dx=-3; dx<=3; dx++) {
-                for (int dy=-3; dy<=3; dy++) {
-                    int nx = x + dx, ny = y + dy;
-                    if (nx < 0 || ny < 0 || nx >= size || ny >= size || grid[nx+ny*size] == 1) {
-                        if (dy < 0) {
-                            above ++;
-                        }
-                        else if (dy > 0) {
-                            below ++;
-                        }
-                    }
-                }
-            }
-            if (grid[off] == 0 && above == 0 && below > 3) {
-                grid[off] = 2;
-            }
-        }
-    }
     int count = 0;
     for (int x=0; x<size; x++) {
         for (int y=0; y<size; y++) {
             int G = grid[x + y*size];
             if (G == 1) {
                 count += 1;
-            }
-            else if (G == 2) {
-                count += 8;
             }
         }
     }
@@ -299,24 +393,6 @@ void initLevel() {
                 newPrt[idx] = P;
                 idx ++;
             }
-            bool oil = grid[x + y*size] == 2;
-            if (oil) {
-                for (int k=0; k<8; k++) {
-                    Particle P;
-                    P.position.x = ((float)x + RAND) / (float)size * (float)GRID_SIZE.x;
-                    P.position.y = ((float)y + RAND) / (float)size * (float)GRID_SIZE.y;
-                    P.velocity.x = P.velocity.y = 0.;
-                    P.heat = 0.;
-                    P.mass = 5.;
-                    P.radius = (float)GRID_SIZE.x / (float)size;
-                    P.types.x = 0.;
-                    P.types.y = 1.;
-                    P.types.z = 0.;
-                    P.types.w = 0.;
-                    newPrt[idx] = P;
-                    idx ++;
-                }
-            }
         }
     }
     addParticles(newPrt, count);
@@ -327,7 +403,7 @@ void initLevel() {
 
     prtIndex0 = newParticleIndex;
 
-    fastForward(60 * 10, 1./120.);
+    //fastForward(60 * 10, 1./120.);
 }
 
 int main (void)
@@ -364,12 +440,12 @@ int main (void)
     monitor = glfwGetPrimaryMonitor();
     mode = glfwGetVideoMode(monitor);
 
-    deltaTime = 1. / (double)(mode->refreshRate);
+    deltaTime = 1. / (double)(REFRESH_RATE);
 
     initLevel();
 
-    CAMERA.x = (float)GRID_SIZE.x * 0.5;
-    CAMERA.y = (float)GRID_SIZE.y * 0.5;
+    //CAMERA.x = (float)GRID_SIZE.x * 0.5;
+    //CAMERA.y = (float)GRID_SIZE.y * 0.5;
     CAMERA.z = 1.;
 
     while (!glfwWindowShouldClose(window)) {
@@ -388,15 +464,17 @@ int main (void)
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
 
-        if (gTime > 5.) {
+        /*if (gTime > 5.) {
             CLFloat2 pos;
-            pos.x = 256.;
-            pos.y = 256.;
+            pos.x = CAMERA.x;
+            pos.y = CAMERA.y;
             updateFireball(pos, 16.);
-        }
+        }*/
 
-        float _r = sin(gTime) * 0.4 + 1.3;
-        float _a = (gTime * 1.37);
+        updatePlayerGfx();
+
+        //float _r = sin(gTime) * 0.4 + 1.3;
+        //float _a = (gTime * 1.37);
         //CAMERA.x = (float)GRID_SIZE.x * 0.5 + cos(_a) * _r * 512.;
         //CAMERA.y = (float)GRID_SIZE.y * 0.5 + sin(_a) * _r * 512.;
 
