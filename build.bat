@@ -1,5 +1,5 @@
 @del /Q release\CavesOfTitan.exe
-@CL /Os /Iinclude main.cpp /link lib\glfw3dll.lib opengl32.lib lib\opencl.lib /out:release/CavesOfTitan.exe
+@CL /Os /Iinclude main.cpp /link lib\glfw3dll.lib opengl32.lib lib\opencl.lib lib\irrKlang.lib /out:release/CavesOfTitan.exe
 @del main.obj
 @del /Q release\kernels
 @del /Q release\shaders

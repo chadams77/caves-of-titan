@@ -8,6 +8,7 @@
 #include <map>
 #include <unordered_map>
 #include <ctime>
+#include "irrKlang/irrKlang.h"
 
 #include "vec_math.h"
 #include "cl_wrapper.h"
@@ -18,6 +19,7 @@ using std::endl;
 using std::map;
 using std::vector;
 using std::string;
+using namespace irrklang;
 
 // Mirror classes for transfering data to/from kernels
 class GridCell {
@@ -82,9 +84,11 @@ CLInt NUM_PARTICLES = 512 * 512;
 CLInt2 GRID_SIZE(2048, 2048);
 CLFloat GRAVITY = 64.;
 CLFloat3 CAMERA;
-CLInt NUM_TRACE = 32;
+CLInt NUM_TRACE = 64;
 
 #define RAND ((float)(rand() % 12347) / 12347.)
+
+ISoundEngine* soundEngine = NULL;
 
 ////////////
 
@@ -541,6 +545,11 @@ int main (void)
         return -1;
     }
 
+    soundEngine = createIrrKlangDevice();
+    if (!soundEngine) {
+        return -1;
+    }
+
     glfwMakeContextCurrent(window);
 
     glfwSetWindowSizeCallback(window, onWindowResize);
@@ -572,9 +581,14 @@ int main (void)
     //CAMERA.y = (float)GRID_SIZE.y * 0.5;
     CAMERA.z = 1.;
 
+    soundEngine->play2D("sfx/music.ogg", true);
+
     while (!glfwWindowShouldClose(window)) {
 
         if (player.health <= 0. && !hasWon) {
+            if (deathTimer < 0.0001 && (deathTimer + deltaTime * 2.) >= 0.0001) {
+                soundEngine->play2D("sfx/die.ogg", false);
+            }
             deathTimer += deltaTime * 2.;
             if (deathTimer > 5.) {
                 initLevel();
@@ -588,6 +602,9 @@ int main (void)
         }
 
         if (hasWon) {
+            if (winTimer < 0.0001 && (winTimer + deltaTime * 2.) >= 0.0001) {
+                soundEngine->play2D("sfx/win.ogg", false);
+            }
             player.health += (100. - player.health) * deltaTime;
             deathTimer -= deltaTime * 2.;
             if (deathTimer < 0.) {
@@ -784,6 +801,7 @@ int main (void)
     delete outImage;
     delete program;
     delete clContext;
+    delete soundEngine;
 
     glfwTerminate();
     return 0;

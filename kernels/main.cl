@@ -173,6 +173,7 @@ __kernel void update_trace( __global GridCell * grid,
         float traceR = 4.;
         float2 vel = (world_mouse - player0) * (float2)2.;
         float speed = length(vel);
+        float dtf = 0.5;
         if (speed > 1.) {
             if (speed > 400.) {
                 vel /= speed;
@@ -181,11 +182,11 @@ __kernel void update_trace( __global GridCell * grid,
             }
 
             for (int i=0; i<num_trace; i++) {
-                vel.y += gravity * delta_time;
-                vel.x -= vel.x * 0.5 * delta_time;
-                vel.y -= vel.y * 0.5 * delta_time;
+                vel.y += gravity * delta_time * dtf;
+                vel.x -= vel.x * 0.5 * delta_time * dtf;
+                vel.y -= vel.y * 0.5 * delta_time * dtf;
 
-                player0 += vel * delta_time;
+                player0 += vel * delta_time * dtf;
 
                 if (vel.y < 0.) {
                     if (collisionDirRock(grid, grid_size, player0, traceR, (int2)(0, -1))) {
