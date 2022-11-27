@@ -214,19 +214,19 @@ void updateFireball (CLFloat2 pos, CLFloat r) {
     int count = 4;
     Particle * data = new Particle[count];
     for (int i=0; i<count; i++) {
-        data[i].velocity.x = RAND * r * 2. - r;
-        data[i].velocity.y = RAND * r * 2. - r;
-        data[i].position.x = pos.x + data[i].velocity.x / 5.;
-        data[i].position.y = pos.y + data[i].velocity.y / 5.;
+        data[i].velocity.x = RAND * r * 4. - r * 2.;
+        data[i].velocity.y = RAND * r * 4. - r * 2.;
+        data[i].position.x = pos.x + data[i].velocity.x / 10.;
+        data[i].position.y = pos.y + data[i].velocity.y / 10.;
         data[i].types.x = 0.;
         data[i].types.y = 0.;
         data[i].types.z = 1.;
         data[i].types.w = 0.;
         data[i].velocity.x = 0.;
         data[i].velocity.y = 0.;
-        data[i].mass = 1.;
+        data[i].mass = 5.;
         data[i].radius = r / 8.;
-        data[i].heat = 1.;
+        data[i].heat = 0.75;
     }
     addParticles(data, count);
     delete data;
@@ -237,7 +237,7 @@ void updatePlayerGfx () {
     CAMERA.y = player.position.y;
     CAMERA.z = 1.;
 
-    int count = 2;
+    int count = 4;
     Particle * data = new Particle[count];
     CLFloat r = player.radius;
     for (int i=0; i<count; i++) {
@@ -260,7 +260,7 @@ void updatePlayerGfx () {
 }
 
 void oilSpray (CLFloat2 pos, CLFloat velx, CLFloat vely) {
-    int count = 4;
+    int count = 8;
     Particle * data = new Particle[count];
     for (int i=0; i<count; i++) {
         float r = (RAND * 2. + 2.) * 0.5;
@@ -314,7 +314,7 @@ void fastForward(int frames, CLFloat dt) {
 }
 
 bool genMaze(int x, int y, int & tx, int & ty, int msize, int pathLen, bool * U) {
-    if (pathLen >= (msize * msize / 4 - 9)) {
+    if (pathLen >= (msize * msize / 4 - 10)) {
         tx = x;
         ty = y;
         return true;
@@ -358,8 +358,15 @@ bool genMaze(int x, int y, int & tx, int & ty, int msize, int pathLen, bool * U)
     return false;
 }
 
+double deathTimer, winTimer;
+bool hasWon;
+CLFloat2 endPos;
+
 void initLevel() {
+    fireLocations.clear();
     clearParticles();
+
+    hasWon = false;
 
     int size = 512;
     int msize=16, mstartx=0, mstarty=0, mendx, mendy;
@@ -385,16 +392,18 @@ void initLevel() {
                     prob = 0.;
                 }
             }
-            if (prob > 0. && prob < 0.33 && !(x <= 3 || y <= 3 || x >= (size - 3) || y >= (size - 3))) {
-                if (RAND < 0.00015) {
+            grid[x + y * size] = (RAND < prob || x <= 3 || y <= 3 || x >= (size - 3) || y >= (size - 3)) ? 1 : 0;
+            if (prob > 0. && !(x <= 3 || y <= 3 || x >= (size - 3) || y >= (size - 3)) && !grid[x + y * size]) {
+                if (RAND < 0.00025 && (abs(mx-mstartx) > 1 || abs(my-mstarty) > 1) && (abs(mx-mendx) > 1 || abs(my-mendy) > 1)) {
                     fireLocations.push_back(FireLoc(((float)x + 0.5f) / (float)size * (float)GRID_SIZE.x, ((float)y + 0.5f) / (float)size * (float)GRID_SIZE.y));
                 }
             }
-            grid[x + y * size] = (RAND < prob || x <= 3 || y <= 3 || x >= (size - 3) || y >= (size - 3)) ? 1 : 0;
         }
     }
 
     player.reset((((float)mstartx) + 0.5) * (float)msz / (float)size * (float)GRID_SIZE.x, (((float)mstarty) + 0.9) * (float)msz / (float)size * (float)GRID_SIZE.y);
+    endPos.x = (((float)mendx) + 0.5) * (float)msz / (float)size * (float)GRID_SIZE.x;
+    endPos.y = (((float)mendy) + 0.9) * (float)msz / (float)size * (float)GRID_SIZE.y;
 
     delete open;
 
@@ -565,6 +574,37 @@ int main (void)
 
     while (!glfwWindowShouldClose(window)) {
 
+        if (player.health <= 0. && !hasWon) {
+            deathTimer += deltaTime * 2.;
+            if (deathTimer > 5.) {
+                initLevel();
+            }
+        }
+        else {
+            deathTimer -= deltaTime * 2.;
+            if (deathTimer < 0.) {
+                deathTimer = 0.;
+            }
+        }
+
+        if (hasWon) {
+            player.health += (100. - player.health) * deltaTime;
+            deathTimer -= deltaTime * 2.;
+            if (deathTimer < 0.) {
+                deathTimer = 0.;
+            }
+            winTimer += deltaTime;
+            if (winTimer > 5.) {
+                initLevel();
+            }
+        }
+        else {
+            winTimer -= deltaTime;
+            if (winTimer < 0.) {
+                winTimer = 0.;
+            }
+        }
+
         if (lastKeyDown[GLFW_KEY_F11] && !keyDown[GLFW_KEY_F11]) {
             setFullscreen(!FULLSCREEN);
         }
@@ -597,7 +637,7 @@ int main (void)
 
         CLInt2 renderSize(WINDOW_WIDTH, WINDOW_HEIGHT);
 
-        if (player.moving == 0 && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+        if (player.moving == 0 && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS && player.health > 0 && !hasWon) {
             float velx = (worldMouse.x - player.position.x) * 2.;
             float vely = (worldMouse.y - player.position.y) * 2.;
             float speed = sqrt(velx*velx+vely*vely);
@@ -617,7 +657,7 @@ int main (void)
         if (player.moving == 0) {
             player.velocity.x = player.velocity.y = 0.;
         }        
-        if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+        if ((glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS || hasWon) && player.health > 0) {
             float velx = (worldMouse.x - player.position.x) * 2.;
             float vely = (worldMouse.y - player.position.y) * 2.;
             float speed = sqrt(velx*velx+vely*vely);
@@ -633,14 +673,22 @@ int main (void)
             }
         }
 
+        oilSpray(endPos, RAND * 10. - 5., 5. * RAND * 5.);
+        oilSpray(endPos, RAND * 10. - 5., 5. * RAND * 5.);
+
+        double dx = endPos.x - player.position.x, dy = endPos.y - player.position.y;
+        if (sqrt(dx*dx+dy*dy) < 24.) {
+            hasWon = true;
+        }
+
         playerBfr->writeSync(0, sizeof(Player), (void *)&player);
-        
+       
         program->setArg("update_grids", 0, particleBfr);
         program->setArg("update_grids", 1, gridBfr);
         program->setArg("update_grids", 2, NUM_PARTICLES);
         program->setArg("update_grids", 3, GRID_SIZE);
 
-        if (player.moving == 0) {
+        if (player.moving == 0 && !hasWon && player.health > 0) {
             program->setArg("update_trace", 0, gridBfr);
             program->setArg("update_trace", 1, GRID_SIZE);
             program->setArg("update_trace", 2, traceBfr);
@@ -672,6 +720,9 @@ int main (void)
         program->setArg("render_main", 2, gridBfr);
         program->setArg("render_main", 3, GRID_SIZE);
         program->setArg("render_main", 4, camera2);
+        program->setArg("render_main", 5, player.health);
+        program->setArg("render_main", 6, (CLFloat)deathTimer);
+        program->setArg("render_main", 7, (CLFloat)winTimer);
 
         program->acquireImageGL(outImage);
 
@@ -683,14 +734,16 @@ int main (void)
             exit(0);
         }
 
-        if (player.moving == 0) {
+        if (player.moving == 0 && player.health > 0 && !hasWon) {
             if (!program->callFunction("update_trace", 1)) {
                 exit(0);
             }
         }
 
-        if (!program->callFunction("update_player", 1)) {
-            exit(0);
+        if (player.health > 0 && !hasWon) {
+            if (!program->callFunction("update_player", 1)) {
+                exit(0);
+            }
         }
 
         if (!program->callFunction("update_particles", NUM_PARTICLES)) {

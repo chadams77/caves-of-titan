@@ -131,6 +131,32 @@ bool collisionDirRock ( __global GridCell * grid, int2 grid_size, float2 pos, fl
 
 }
 
+float getHeat ( __global GridCell * grid, int2 grid_size, float2 pos, float radius ) {
+
+    int xc = (int)floor(pos.x);
+    int yc = (int)floor(pos.y);
+    int r = (int)ceil(radius + 1.);
+
+    float ret = 0.;
+
+    for (int x=xc - r; x<=(xc + r); x++) {
+        for (int y=yc - r; y<=(yc + r); y++) {
+            if (x >= 0 && y >= 0 && x < grid_size.x && y < grid_size.y) {
+                float dx = ((float)(x) + 0.5) - pos.x, dy = ((float)(y) + 0.5) - pos.y;
+                float t = 1. - (dx*dx+dy*dy / radius*radius);
+                if (t > 0.) {
+                    int grid_index = y * grid_size.x + x;
+                    __global int * GC = (__global int*)(grid + grid_index);
+                    ret += TO_FLOAT(GC[1]);
+                }
+            }
+        }
+    }
+
+    return ret;
+
+}
+
 __kernel void update_trace( __global GridCell * grid,
                             int2 grid_size,
                             __global Trace * trace,
@@ -221,15 +247,22 @@ __kernel void update_player( __global GridCell * grid,
                              float gravity,
                              __global Player * player ) {
 
-    if (player->moving == 0) {
-        return;
-    }
-
     int id = get_global_id(0);
+    float traceR = 4.;
 
     if (id == 0) {
 
-        float traceR = 4.;
+        if (getHeat(grid, grid_size, player->pos, traceR) > 0.) {
+            player->health -= 10. * delta_time;
+            if (player->health < 0.) {
+                player->health = 0.;
+            }
+        }
+
+        if (player->moving == 0) {
+            return;
+        }
+
         float2 vel = player->vel;
         float2 player0 = player->pos;
 
@@ -363,11 +396,16 @@ __kernel void update_particles( __global Particle * particles,
 
         float avgHeat = totalHeat / totalT;
 
-        P.heat += (avgHeat * 0.5 - myHeat) * delta_time * 8.;
-        if (P.heat > 8.) {
-            P.heat = 8.;
+        P.heat += (avgHeat * 0.1 - myHeat) * delta_time * 0.1;
+        if (P.heat > 11.) {
+            P.heat = 11.;
         }
-        P.heat -= delta_time * max(P.heat, 1.f);
+        if (P.types.x > 0.5) {
+            P.heat -= 5. * delta_time * max(P.heat, 1.f);
+        }
+        else {
+            P.heat -= .5 * delta_time * max(P.heat, 1.f);
+        }
         if (P.types.z > 0.5) {
             P.radius -= P.radius * delta_time;
             if (P.radius < 0.01f) {
@@ -376,7 +414,7 @@ __kernel void update_particles( __global Particle * particles,
         }
         if (P.types.y > 1.5) {
             if (P.types.y > 2.5) {
-                P.radius -= P.radius * delta_time * 0.02;
+                P.radius -= P.radius * delta_time * 0.01;
                 if (P.radius < 1.5f) {
                     P.id = -1;
                 }
@@ -394,12 +432,12 @@ __kernel void update_particles( __global Particle * particles,
                 P.id = -1;
             }
         }
-        if (P.types.x > 0.5 && P.heat > 2.) {
+        if (P.types.x > 0.5 && P.heat > 10.) {
             P.types = (float4)(0., 0., 1., 0.);
         }
         if (P.types.y > 0.5 && P.heat > 0.1) {
             P.heat = 1.;
-            P.radius *= 1.75;
+            P.radius *= 1.5;
             P.mass *= 10.;
             P.types = (float4)(0., 0., 1., 0.);
         }
@@ -445,7 +483,10 @@ __kernel void render_main( __write_only image2d_t out_color,
                              int2 render_size,
                              __global GridCell * grid,
                              int2 grid_size,
-                             float3 camera ) {
+                             float3 camera,
+                             float health,
+                             float deathTimer,
+                             float winTimer ) {
     int id = get_global_id(0);
     int n = render_size.x * render_size.y;
 
@@ -494,7 +535,7 @@ __kernel void render_main( __write_only image2d_t out_color,
             }
 
             if (oil > 0.5) {
-                float3 t = clamp((float3)oil / 2.5f, (float3)0., (float3)1.);
+                float3 t = clamp((float3)(oil-2.5f) / 2.5f, (float3)0., (float3)1.);
                 clr.xyz = ((float3)1. - t) * clr.xyz;
             }
 
@@ -504,9 +545,24 @@ __kernel void render_main( __write_only image2d_t out_color,
             clr.z += min(heatT * 1., 1.);
 
             clr.g += trace;
+
+            clr.x += min(pow(1.f - health / 100.f, 1.5f), 0.5f);
         }
 
         clr = clamp(clr, (float4)(0.), (float4)(1.));
+
+        if (deathTimer > 0.) {
+            float3 clr2 = (float3)(1., 0.05, 0.05);
+            float t = clamp(deathTimer/2.5f, 0.f, 1.f);
+            clr.xyz = clr.xyz * (float3)(1.f - t) + clr2 * (float3)t;
+        }
+
+        if (winTimer > 0.) {
+            float3 clr2 = (float3)(0.05, 1., 0.05);
+            float t = clamp(winTimer/2.5f, 0.f, 1.f);
+            clr.xyz = clr.xyz * (float3)(1.f - t) + clr2 * (float3)t;
+        }
+
         write_imagef(out_color, (int2)(sx, sy), clr);
 
     }
