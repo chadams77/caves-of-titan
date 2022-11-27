@@ -17,6 +17,8 @@ typedef struct __attribute__((packed)) _GridCell {
     int heat;
     int2 velocity; // 4
     int4 types; // 8 // x:rock, y:oil, z:fire/smoke, w:water/steam
+    int maxID;
+    int3 dummy; // 12
 } GridCell;
 
 __kernel void clear_grids( __global GridCell * grid,
@@ -27,6 +29,7 @@ __kernel void clear_grids( __global GridCell * grid,
     if (id < n) {
         __global int * GC = (__global int*)(grid + id);
         GC[0] = GC[1] = GC[2] = GC[3] = GC[4] = GC[5] = GC[6] = GC[7] = 0;
+        GC[8] = -1;
     }
 }
 
@@ -44,7 +47,7 @@ __kernel void update_grids( __global Particle * particles,
         }
         int xc = (int)floor(P.position.x);
         int yc = (int)floor(P.position.y);
-        int r = (int)ceil(P.radius + 0.5);
+        int r = (int)ceil(P.radius + 1.);
 
         for (int x=xc - r; x<=(xc + r); x++) {
             for (int y=yc - r; y<=(yc + r); y++) {
@@ -52,6 +55,7 @@ __kernel void update_grids( __global Particle * particles,
                     float dx = ((float)(x) + 0.5) - P.position.x, dy = ((float)(y) + 0.5) - P.position.y;
                     float t = 1. - sqrt(dx*dx+dy*dy) / P.radius;
                     if (t > 0.) {
+                        t = (float)pow((double)t, 0.5);
                         int grid_index = y * grid_size.x + x;
                         __global int * GC = (__global int*)(grid + grid_index);
                         atomic_add(GC + 0, TO_FIXED(P.mass * t));
@@ -62,6 +66,7 @@ __kernel void update_grids( __global Particle * particles,
                         atomic_add(GC + 5, TO_FIXED(P.types.y * t));
                         atomic_add(GC + 6, TO_FIXED(P.types.z * t));
                         atomic_add(GC + 7, TO_FIXED(P.types.w * t));
+                        atomic_max(GC + 8, P.id);
                     }
                 }
             }
@@ -85,9 +90,14 @@ __kernel void update_particles( __global Particle * particles,
             return;
         }
 
-        P.velocity.x -= P.velocity.x * 0.1 * delta_time;
-        P.velocity.y -= P.velocity.y * 0.1 * delta_time;
-        P.velocity.y += gravity * delta_time;
+        if (P.types.z > 0.5) {
+            P.velocity.y -= 0.5 * gravity * delta_time;
+        }
+        else {
+            P.velocity.y += gravity * delta_time;
+        }
+        P.velocity.x -= P.velocity.x * P.radius / P.mass * delta_time;
+        P.velocity.y -= P.velocity.y * P.radius / P.mass * delta_time;
 
         int xc = (int)floor(P.position.x);
         int yc = (int)floor(P.position.y);
@@ -96,21 +106,49 @@ __kernel void update_particles( __global Particle * particles,
         float wPressX = 0.;
         float wPressY = 0.;
         float totalHeat = 0.;
+        float stick = 0.;
+        float totalT = 0.;
+
+        float myHeat = P.heat * sqrt(P.velocity.x * P.velocity.x + P.velocity.y * P.velocity.y) * P.mass / 10.f;
 
         for (int x=xc - r; x<=(xc + r); x++) {
             for (int y=yc - r; y<=(yc + r); y++) {
                 if (x >= 0 && y >= 0 && x < grid_size.x && y < grid_size.y) {
-                    float dx = ((float)(x) + 0.5) - P.position.x, dy = ((float)(y) + 0.5) - P.position.y;
+                    float dx = (float)(x) - floor(P.position.x), dy = (float)(y) - floor(P.position.y);
                     float t = 1. - sqrt(dx*dx+dy*dy) / P.radius;
-                    if (t > 0.) {
+                    if (t > 0. && t < 1.) {
                         int grid_index = y * grid_size.x + x;
                         __global int * GC = (__global int*)(grid + grid_index);
                         float mass = TO_FLOAT(GC[0]) * t;
                         float heat = TO_FLOAT(GC[1]) * t;
                         float2 velocity = (float2)(TO_FLOAT(GC[2]) * t, TO_FLOAT(GC[3]) * t);
                         float4 types = (float4)(TO_FLOAT(GC[4]) * t, TO_FLOAT(GC[5]) * t, TO_FLOAT(GC[6]) * t, TO_FLOAT(GC[7]) * t);
+                        int maxID = GC[8];
 
-                        totalHeat += heat;
+                        totalHeat += heat * sqrt(velocity.x * velocity.x + velocity.y * velocity.y) * mass / 10.f;
+
+                        totalT += t;
+
+                        if (types.x > 0.01) {
+                            mass *= 100.;
+                            stick += types.x * 10.;
+                        }
+                        if (types.y > 0.01) {
+                            stick += types.y * 0.025;
+                        }
+                        if (types.z > 0.01) {
+                            stick += types.y * 0.01;
+                        }
+
+                        if (fabs(dx - 0.f) < 0.0001f) {
+                            int r1 = (x + maxID) % 13;
+                            dx += (r1 / 12.) * 0.8 - 0.4;
+                        }
+
+                        if (fabs(dy - 0.f) < 0.0001f) {
+                            int r1 = (y + maxID) % 13;
+                            dy += (r1 / 12.) * 0.8 - 0.4;
+                        }
 
                         wPressX += -dx * mass;
                         wPressY += -dy * mass;
@@ -119,16 +157,32 @@ __kernel void update_particles( __global Particle * particles,
             }
         }
 
-        P.heat += (totalHeat / (M_PI*r*r) - P.heat) * delta_time * 0.1;
-        P.heat -= P.heat * 0.025 * delta_time;
-        if (P.heat <= 0.) {
+        float avgHeat = totalHeat / totalT;
+
+        P.heat += (avgHeat * 0.5 - myHeat) * delta_time * 8.;
+        if (P.heat > 8.) {
+            P.heat = 8.;
+        }
+        P.heat -= delta_time * max(P.heat, 1.f);
+        if (P.types.z > 0.5) {
+            P.radius -= P.radius * delta_time;
+            if (P.radius < 0.01f) {
+                P.id = -1;
+            }
+        }
+        if (P.heat <= 0.f) {
             P.heat = 0.;
             if (P.types.z > 0.5) {
                 P.id = -1;
             }
         }
-        if (P.types.x > 0.5 && P.heat > 10.) {
-            P.types = (float4)(0., 1., 0., 0.);
+        if (P.types.x > 0.5 && P.heat > 5.) {
+            P.types = (float4)(0., 0., 1., 0.);
+        }
+        if (P.types.y > 0.5 && P.heat > 0.1) {
+            P.heat = 1.;
+            P.radius *= 1.75;
+            P.types = (float4)(0., 0., 1., 0.);
         }
 
         wPressX /= P.mass;
@@ -137,7 +191,17 @@ __kernel void update_particles( __global Particle * particles,
         P.velocity.x += wPressX * delta_time;
         P.velocity.y += wPressY * delta_time;
 
-        if (P.types.x > 0.5) {
+        if (totalT) {
+            stick /= totalT;
+            if (stick > 1.) {
+                stick = 1.;
+            }
+
+            P.velocity.x -= stick / 10. * P.velocity.x;
+            P.velocity.y -= stick / 10. * P.velocity.y;
+        }
+
+        if (P.types.x > 0.5 && P.heat < 1.) {
             P.velocity = (float2)(0., 0.);
         }
 
@@ -206,7 +270,7 @@ __kernel void render_main( __write_only image2d_t out_color,
         int y = (int)round(cy);
 
         float yt = 1. - (float)y / (float)render_size.y;
-        float4 clr = (float4)(yt + (1. - yt) * 0.5, yt + (1. - yt) * 0.5, yt + (1. - yt) * 0.1, 1.) * (float4)(0.2);
+        float4 clr = (float4)(yt + (1. - yt) * 0.5, yt + (1. - yt) * 0.5, yt + (1. - yt) * 0.1, 1.) * (float4)(0.4);
 
         if (x >= 0 && y >= 0 && x < grid_size.x && y < grid_size.y) {
             int grid_index = y * grid_size.x + x;
@@ -217,13 +281,35 @@ __kernel void render_main( __write_only image2d_t out_color,
             float fire = TO_FLOAT(GC->types.z);
             float water = TO_FLOAT(GC->types.w);
 
-            if (rocks > 0.5) {
-                clr.x = 0.4;
-                clr.y = 0.5;
-                clr.z = 0.35;
+            if (rocks > 0.0) {
+                int rand1 = (GC->maxID * 17) % 3;
+                if (rand1 == 0) {
+                    clr.x = 0.366;
+                    clr.y = 0.289;
+                    clr.z = 0.289;
+                }
+                else if (rand1 == 1) {
+                    clr.x = 0.511;
+                    clr.y = 0.429;
+                    clr.z = 0.428;
+                }
+                else if (rand1 == 2) {
+                    clr.x = 0.444;
+                    clr.y = 0.364;
+                    clr.z = 0.256;
+                }
+                clr.xyz *= (float3)(min(rocks / 2.5f, 1.f));
             }
 
-            clr.x += heat / 5.;
+            if (oil > 0.5) {
+                float3 t = clamp((float3)oil / 2.5f, (float3)0., (float3)1.);
+                clr.xyz = ((float3)1. - t) * clr.xyz;
+            }
+
+            float heatT = clamp(heat / 10.f, 0.f, 1.f);
+            clr.x += min(heatT * 4., 1.);
+            clr.y += min(heatT * 2., 1.);
+            clr.z += min(heatT * 1., 1.);
         }
 
         clr = clamp(clr, (float4)(0.), (float4)(1.));
